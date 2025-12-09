@@ -1,0 +1,563 @@
+// HOTELLI HARJOITUSTYÖ  EELI YLINIEMI  ARVOSANA 4–5
+
+// KIRJASTOT JA RAKENTEET
+#include <iostream>
+#include <string>   // varaajan nimi stringiin
+#include <vector>   // älykkäämpi taulukko
+#include <random>   // modernimpi satunnaisuus
+#include <limits>   // virheenpoisto
+#include <iomanip>  // tarkkuus tulostukseen
+#include <thread>   
+#include <chrono>   // viive efektejä
+#include <fstream> // tallennus
+#include <cctype> // mahdollinen tolower
+
+using namespace std;
+
+struct room {             // Luodaan huoneen pohja/rakenne: 
+    int roomnumber;       // annetaan sille oma huonekohtainen numero
+    int capacity;         // monenko hengen huone
+    bool isreserved;      // varausboolista löytyy true tai false eli onko varattu vai eikö ole
+    int reservationid;     // jos on varattu annetaan sille varausnumero
+};
+
+struct reservation {   // varauksen pohja, täältä funktiot saavat tietojaan ohjelmaa operoidessa
+    int reservationid;   // varaus käyttää annettua varausnumeroa, arvotaan väliltä 1-99999
+    string asiakasnimi;   // varaajan nimi  tallennetaan stringiin niin sen käsittely onnistuu parhaiten
+    int roomnumber;
+    int nights;    // montako yötä asiakas yöpyy tallennetaan tänne
+    double lopphinta; // varauksen kokonaishinta doublella
+};
+
+// ESITELLÄÄN FUNKTIOT
+void welcometext();
+void showmenu();
+int kysyvalinta();
+void handlevalinta(int valinta, vector<room>& rooms, vector<reservation>& reservations);   // Aliohjelma Funktiot esitellään tässä kohtaa jotta main on valmis kutsumaan niitä tarvittaessa
+void teevaraus(vector<room>& rooms, vector<reservation>& reservations);                    // itse funktiot löytyvät koodin lopusta
+void haevaraus(const vector<reservation>& reservations);                                   //funktiot sisältävät vector listoja ja käyttävät niitä (jotka jotka luodaan mainissa)
+void haevaraus_nro(const vector<reservation>& reservations);                 // constant vectorit jotta listat ovat ns vakioita (ne voivat muuttua mutta luotujen parametrien sisällä)
+void haevaraus_nimi(const vector<reservation>& reservations);
+void peruutavaraus(vector<room>& rooms, vector<reservation>& reservations);
+void showfreerooms(const vector<room>& rooms);
+void showtilastot(const vector<reservation>& reservations);
+void tallenna_varaukset(const vector<reservation>& reservations);
+void lataa_varaukset(vector<reservation>& reservations);
+void syncvaraukset(vector<room>& rooms, const vector<reservation>& reservations);
+void initlzrooms(vector<room>& rooms);
+int findfree_room_type(const vector<room>& rooms, int roomtype);
+
+// PÄÄOHJELMA
+int main() {
+    setlocale(LC_ALL, "fi_FI");
+
+    // luodaan vector listat huoneille ja varauksille koska ne voivat kasvaa ja pienentyä automaattisesti
+    vector<room> rooms;  // vector room sisältää kaikki hotellin huoneet
+    vector<reservation> reservations;  // vector res sisältää kaikki tehdyt varaukset
+
+    initlzrooms(rooms); // pääohjelma alkaa luomalla uudet huoneet satunnaisesti
+    lataa_varaukset(reservations); // ladataan fstreamilla tiedostosta mahd. luodut varaukset levyltä (varaukset.txt)
+    syncvaraukset(rooms, reservations); // synkronoidaan mahd. olemassa olevat varaukset huoneisiin
+
+    welcometext();
+
+    int valinta; // näytetään valikkoa niin kauan kunnes valinta on mikä tahansa muu kuin 0 eli poistu 
+    do {
+        showmenu();
+        valinta = kysyvalinta();
+        handlevalinta(valinta, rooms, reservations);
+    } while (valinta != 0);
+
+    tallenna_varaukset(reservations); // ainakun palataan varauksenteosta (tai muusta) valikkoon tallennetaan mahd. tehdyt varaukset varaukset.txtiin
+
+    cout << "Ohjelma sulkeutuu. Kiitos asioinnista kanssamme.\n"; // tämä näkyy jos 0 syötetään
+    this_thread::sleep_for(chrono::seconds(1));
+    return 0;
+}
+
+// TALLENNUS
+void tallenna_varaukset(const vector<reservation>& reservations) { // aliohjelma joka tallentaa varaukset
+    ofstream tiedosto("varaukset.txt");
+    if (!tiedosto) {
+        cerr << "Virhe. Varauksia ei voitu tallentaa.\n";
+        return;
+    }
+
+    for (const auto& r : reservations) { // for looppi käy varaukset läpi reservations listasta ja kirjaa ne yksi kerrallaan yhdelle riville. r on yksi asiakas
+        tiedosto << r.reservationid << ";"
+            << r.asiakasnimi << ";"
+            << r.roomnumber << ";"
+            << r.nights << ";"
+            << r.lopphinta << "\n";
+    }
+
+    tiedosto.close();
+    cout << "Varaukset tallennettiin onnistuneesti.\n";
+}
+
+void lataa_varaukset(vector<reservation>& reservations) {
+    ifstream tiedosto("varaukset.txt");
+    if (!tiedosto) {
+        cout << "Ei aiempia varauksia (tiedostoa ei löytynyt).\n";
+        return;
+    }
+
+    reservations.clear(); // tyhjennetään vanha lista ennenkuin ladataan uusi
+    reservation r;
+    
+
+    while (tiedosto >> r.reservationid) { //varauksia ladataan niin kauan kuin tiedostoa riittää
+        tiedosto.ignore(); // ohita ';'
+        getline(tiedosto, r.asiakasnimi, ';');
+        tiedosto >> r.roomnumber;
+        tiedosto.ignore(); // ignoretaan puolipisteet tietojen välistä
+        tiedosto >> r.nights;
+        tiedosto.ignore();
+        tiedosto >> r.lopphinta;
+        tiedosto.ignore(numeric_limits<streamsize>::max(), '\n');
+        reservations.push_back(r); // kun tiedot yhdestä varauksesta on luettu ne työnnetään se reservation listaan
+    }
+
+    tiedosto.close();
+    cout << "Varaukset ladattu tiedostosta onnistuneesti ("
+        << reservations.size() << " kpl).\n";
+}
+
+// UI/VALIKKO
+void welcometext() {
+    cout << "======================================================================\n";
+    cout << "   TERVETULOA! HOTELLIHUONEEN SÄHKÖINEN VARAUSOHJELMA KÄYNNISTYY...   \n";
+    cout << "======================================================================\n";
+
+    this_thread::sleep_for(chrono::seconds(2)); // viive efektejä pysäyttämällä säie...
+}
+
+void showmenu() {
+    cout << "\n--- PÄÄVALIKKO ---\n";
+    cout << "1. Tee uusi varaus\n";
+    cout << "2. Hae varaus numerolla tai nimellä\n";
+    cout << "3. Peruuta varaus varausnumerolla\n";
+    cout << "4. Näytä vapaiden huoneiden tila\n";
+    cout << "5. Näytä varaus- ja tulotilastot\n";
+    cout << "0. Poistu ohjelmasta\n";
+}
+
+int kysyvalinta() {
+    int valinta;
+    while (true) {
+        cout << "Anna valintasi (1–5) tai 0 poistuaksesi ohjelmasta: ";
+        if (cin >> valinta) {
+            if (valinta >= 0 && valinta <= 5) {
+                cin.ignore(numeric_limits<streamsize>::max(), '\n'); // laitetaan tämä jotta valintaan palautuu vain käyttäjän antama nro eikä mitään muuta
+                return valinta;
+            }
+            else {
+                cout << "Virhe. Anna numero väliltä 0–5.\n";
+            }
+        }
+        else {
+            cout << "Virheellinen syöte. Syötä numero.\n";
+            cin.clear();
+            cin.ignore(numeric_limits<streamsize>::max(), '\n');
+        }
+    }
+}
+
+// VARAUSTEN HALLINTA
+void teevaraus(vector<room>& rooms, vector<reservation>& reservations) {
+    cout << "\n*** Uuden varauksen teko ***\n";
+
+    int roomtype;
+    int nights;
+    string nimi;
+    int reservationid;
+    double pricepernight;
+    int alepercent;
+    double lopphinta;
+    int roomindex;
+
+    pricepernight = 0.0;
+    alepercent = 0;
+    lopphinta = 0.0;
+
+    cout << "Valitse huonetyyppi (1-3 hengen): ";
+    cin >> roomtype;
+
+    roomindex = findfree_room_type(rooms, roomtype); // kutsutaan toista funktiota joka etsii vapaan huoneen asiakkaan toivetta noudattaen
+    if (roomindex == -1) {
+        cout << "Valitun huonetyypin vapaita huoneita ei ole tällä hetkellä.\n";
+        return;
+    }
+
+    cout << "Kuinka monelle yölle haluat varauksen? ";
+    cin >> nights;
+    cin.ignore(numeric_limits<streamsize>::max(), '\n');
+
+    cout << "Anna varaajan nimi: ";
+    getline(cin, nimi);
+
+    random_device rd;
+    mt19937 gen(rd());
+    uniform_int_distribution<int> discountDist(0, 2); //arvotaan ale modernilla satunnaisuudella
+    alepercent = discountDist(gen) * 10;
+
+    if (roomtype == 1) {
+        pricepernight = 100.0;
+    }
+    else if (roomtype == 2) {
+        pricepernight = 150.0;
+    }
+    else {
+        pricepernight = 250.0;
+    }
+
+
+    lopphinta = nights * pricepernight * (1 - alepercent / 100.0);
+
+    uniform_int_distribution<> idDist(10000, 99999);
+    reservationid = idDist(gen);
+
+    rooms[roomindex].isreserved = true;
+    rooms[roomindex].reservationid = reservationid;
+
+    reservation newres = { reservationid, nimi, rooms[roomindex].roomnumber, nights, lopphinta }; // merkitään että tietty huone [roomindex] on varattu
+    reservations.push_back(newres);
+
+    // yhteenveto
+    cout << "Varaus tehty onnistuneesti!\n";
+    cout << "Varausnumero: " << reservationid << endl;
+    cout << "Nimi: " << nimi << endl;
+    cout << "Huonetyyppi: " << roomtype << "hh\n";
+    cout << "Yöt: " << nights << endl;
+    cout << "Alennus: " << alepercent << "%\n";
+    cout << fixed << setprecision(2);
+    cout << "Loppusumma: " << lopphinta << " euroa\n";
+}
+
+void handlevalinta(int valinta, vector<room>& rooms, vector<reservation>& reservations) { // valikon perusta
+    switch (valinta) { // valitaan lohko
+    case 1:
+        cout << "\nAloitetaan uuden varauksen teko...\n";
+        this_thread::sleep_for(chrono::seconds(2));
+        teevaraus(rooms, reservations);
+        break; // kun lohko on suoritettu eli funkiot sisällä loppu poistutaan switchistä takaisin menuun
+    case 2:
+        cout << "\nVarauksenhaku käynnistyy...\n";
+        this_thread::sleep_for(chrono::seconds(2));
+        haevaraus(reservations);
+        break;
+    case 3:
+        cout << "\nVarauksen peruutus käynnistyy...\n";
+        this_thread::sleep_for(chrono::seconds(2));
+        peruutavaraus(rooms, reservations);
+        break;
+    case 4:
+        cout << "\nNäytetään vapaat huoneet...\n";
+        this_thread::sleep_for(chrono::seconds(2));
+        showfreerooms(rooms);
+        break;
+    case 5:
+        cout << "\nHaetaan varaus- ja tulotilastot...\n";
+        this_thread::sleep_for(chrono::seconds(2));
+        showtilastot(reservations);
+        break;
+    case 0:
+        cout << "\nLopetetaan ohjelma...\n";
+        break;
+    default:
+        cout << "\nVirhe. Tuntematon valinta.\n";
+    }
+}
+
+// HUONEIDEN KÄSITTELY
+void initlzrooms(vector<room>& rooms) {
+    random_device rd;
+    mt19937 gen(rd());
+    uniform_int_distribution<int> roomCountDist(40, 300);
+    uniform_int_distribution<int> ratiojakauma(25, 35);
+
+    int totalrooms = roomCountDist(gen);
+    rooms.clear();
+    rooms.reserve(totalrooms);
+
+    // varmistetaan että huonemäärä on parillinen
+    if (totalrooms % 2 != 0) {
+        totalrooms++;
+    }
+
+    int pros1 = ratiojakauma(gen);
+    int pros2 = ratiojakauma(gen);
+    int pros3 = 100 - pros1 - pros2;
+
+
+    if (pros3 < 20) pros3 = 20; // ei liian vähän kolmosia
+
+    int rooms1 = totalrooms * pros1 / 100;
+    int rooms2 = totalrooms * pros2 / 100;
+    int rooms3 = totalrooms - rooms1 - rooms2;
+
+    int roomnumber = 1;
+
+    // luodaan huoneet
+    for (int i = 0; i < rooms1; ++i) {
+        room r{ roomnumber++, 1, false, 0 };
+        rooms.push_back(r);
+    }
+    for (int i = 0; i < rooms2; ++i) {
+        room r{ roomnumber++, 2, false, 0 };
+        rooms.push_back(r);
+    }
+    for (int i = 0; i < rooms3; ++i) {
+        room r{ roomnumber++, 3, false, 0 };
+        rooms.push_back(r);
+    }
+
+
+}
+
+
+int findfree_room_type(const vector<room>& rooms, int roomtype) {
+    for (size_t i = 0; i < rooms.size(); ++i) { // haetaan montako huonetta hotellissa on, i käy läpi ne kaikki
+        if (!rooms[i].isreserved && rooms[i].capacity == roomtype) { // katsotaan että i:n löytämä huone ei ole varattu ja että se on oikean kokoinen
+            return static_cast<int>(i); // palautetaan indeksinä
+        }
+    }
+    return -1; // ei löytynyt vapaata huonetta
+}
+
+void haevaraus(const vector<reservation>& reservations) {
+    if (reservations.empty()) {
+        cout << "Ei yhtään varausta järjestelmässä.\n";
+        return;
+    }
+
+    int tapa;
+    while (true) {  // kysytään kunnes saadaan hyväksytty syöte
+        cout << "Haluatko hakea (1) varausnumerolla vai (2) nimellä? ";
+        if (cin >> tapa) {
+            if (tapa == 1 || tapa == 2) {
+                cin.ignore(numeric_limits<streamsize>::max(), '\n');
+                break;
+            }
+            else {
+                cout << "Anna joko 1 tai 2.\n";
+            }
+        }
+        else {
+            cout << "Virheellinen syote. Syota numero.\n";
+            cin.clear();
+            cin.ignore(numeric_limits<streamsize>::max(), '\n');
+        }
+    }
+
+    if (tapa == 1) {
+        haevaraus_nro(reservations);
+    }
+    else {
+        haevaraus_nimi(reservations);
+    }
+}
+
+void haevaraus_nro(const vector<reservation>& reservations) {
+    int id;
+    while (true) {
+        cout << "Anna haettava varausnumero: ";
+        if (cin >> id) {
+            cin.ignore(numeric_limits<streamsize>::max(), '\n');
+            break;
+        }
+        else {
+            cout << "Virheellinen syote. Syota numero.\n";
+            cin.clear();
+            cin.ignore(numeric_limits<streamsize>::max(), '\n');
+        }
+    }
+
+    bool loytyi = false;
+    for (const auto& r : reservations) {
+        if (r.reservationid == id) {
+            cout << "\nVaraus loytyi:\n";
+            cout << "Varausnumero: " << r.reservationid << endl;
+            cout << "Nimi: " << r.asiakasnimi << endl;
+            cout << "Huonenumero: " << r.roomnumber << endl;
+            cout << "Yöt: " << r.nights << endl;
+            cout << fixed << setprecision(2);
+            cout << "Loppuhinta: " << r.lopphinta << " euroa\n";
+            loytyi = true;
+            break;
+        }
+    }
+
+    if (!loytyi) {
+        cout << "Varausta numerolla " << id << " ei löytynyt.\n";
+    }
+}
+
+void haevaraus_nimi(const vector<reservation>& reservations) {
+    string nimi;
+    cout << "Anna varaajan nimi: ";
+    getline(cin, nimi);
+
+    bool loytyi = false; //merkitään löytyikö varaus
+    for (const auto& r : reservations) {
+        if (r.asiakasnimi == nimi) {  // tarkka yhtenevyys
+            if (!loytyi) {
+                cout << "\nLöysimme seuraavat varaukset: \n";
+            }
+            cout << "-----------------------------\n";
+            cout << "Varausnumero: " << r.reservationid << endl;
+            cout << "Nimi: " << r.asiakasnimi << endl;
+            cout << "Huonenumero: " << r.roomnumber << endl;
+            cout << "Yöt: " << r.nights << endl;
+            cout << fixed << setprecision(2);
+            cout << "Loppuhinta: " << r.lopphinta << " euroa\n";
+            loytyi = true;
+        }
+    }
+
+    if (!loytyi) {
+        cout << "Yhtään varausta nimellä \"" << nimi << "\" ei löytynyt.\n";
+    }
+}
+
+void peruutavaraus(vector<room>& rooms, vector<reservation>& reservations) {
+    if (reservations.empty()) {
+        cout << "Yhtään varausta ei löytynyt.\n";
+        return;
+    }
+
+    int id;
+    while (true) {
+        cout << "Anna peruutettavan varauksen numero: ";
+        if (cin >> id) {
+            cin.ignore(numeric_limits<streamsize>::max(), '\n');
+            break;
+        }
+        else {
+            cout << "Hups! Tällä numerolla ei löytynyt varausta. Anna varausnumero uudestaan: \n";
+            cin.clear();
+            cin.ignore(numeric_limits<streamsize>::max(), '\n');
+        }
+    }
+
+    bool loytyi = false;
+
+    for (size_t i = 0; i < reservations.size(); ++i) {
+        if (reservations[i].reservationid == id) {
+            loytyi = true;
+
+            // etsitään huone
+            for (auto& huone : rooms) { // auto lukee vektorien sisältöä ja etsii oikean huoneen ei kopiota
+                if (huone.reservationid == id) { // käännetään kaikki jotta huone vapautuu
+                    huone.isreserved = false;
+                    huone.reservationid = 0;
+                    break;
+                }
+            }
+
+            cout << "Varaus numerolla " << id << " (" << reservations[i].asiakasnimi << ") peruutettu onnistuneesti.\n";
+            reservations.erase(reservations.begin() + i);
+            break;
+        }
+    }
+
+    if (!loytyi) {
+        cout << "Varausta numerolla " << id << " ei löytynyt.\n";
+    }
+}
+
+void showfreerooms(const vector<room>& rooms) {
+    int vapaat1 = 0, vapaat2 = 0, vapaat3 = 0;
+    int varatut1 = 0, varatut2 = 0, varatut3 = 0;
+
+    for (const auto& h : rooms) {
+        if (h.capacity == 1) {
+            if (h.isreserved) varatut1++;
+            else vapaat1++;
+        }
+        else if (h.capacity == 2) {
+            if (h.isreserved) varatut2++;
+            else vapaat2++;
+        }
+        else if (h.capacity == 3) {
+            if (h.isreserved) varatut3++;
+            else vapaat3++;
+        }
+    }
+
+    cout << "\n--- Huoneiden tila ---\n";
+    cout << "1 hengen huoneet: vapaita " << vapaat1 << ", varattuja " << varatut1 << "\n";
+    cout << "2 hengen huoneet: vapaita " << vapaat2 << ", varattuja " << varatut2 << "\n";
+    cout << "3 hengen huoneet: vapaita " << vapaat3 << ", varattuja " << varatut3 << "\n";
+
+    cout << "\nHaluatko listata yksittäiset vapaat huoneet? (kyllä/ei): ";
+    string valinta;
+    cin >> valinta;
+    cin.ignore(numeric_limits<streamsize>::max(), '\n');
+
+    if (!valinta.empty() && (valinta[0] == 'k' || valinta[0] == 'K')) {
+        cout << "\nVapaat huoneet (huonenumero - kapasiteetti):\n";
+        for (const auto& h : rooms) {
+            if (!h.isreserved) {
+                cout << "Huone " << h.roomnumber << " (" << h.capacity << " hh)\n";
+            }
+        }
+    }
+    else {
+        cout << "Palataan paavalikkoon...\n";
+    }
+}
+
+// TILASTOJEN KÄSITTELY
+void showtilastot(const vector<reservation>& reservations) {
+    if (reservations.empty()) {
+        cout << "Yhtään varausta ei ole vielä tehty.\n";
+        return;
+    }
+
+    int maara = reservations.size();
+    int yksiot = 0, kaksiot = 0, kolmiot = 0;
+    double tulot = 0.0;
+
+    for (const auto& r : reservations) {
+        tulot += r.lopphinta;
+
+        // päätellään huonetyyppi huonenumeroiden perusteella (tämä toimii jos huoneiden kapasiteetit ovat säilyneet)
+        if (r.roomnumber < 1000) { // 
+            // 
+            if (r.lopphinta / r.nights <= 120) yksiot++;
+            else if (r.lopphinta / r.nights <= 180) kaksiot++;
+            else kolmiot++;
+        }
+    }
+
+    double keskihinta = tulot / maara;
+
+    cout << fixed << setprecision(2);
+    cout << "\n--- Varaus- ja tulotilastot ---\n";
+    cout << "Varauksia yhteensä: " << maara << endl;
+    cout << "1 hengen huoneita varattu: " << yksiot << endl;
+    cout << "2 hengen huoneita varattu: " << kaksiot << endl;
+    cout << "3 hengen huoneita varattu: " << kolmiot << endl;
+    cout << "Hotellin kokonaistulot: " << tulot << " euroa\n";
+    cout << "Keskimääräinen varauksen arvo: " << keskihinta << " euroa\n";
+}
+
+void syncvaraukset(vector<room>& rooms, const vector<reservation>& reservations) {
+    // nollataan ensin kaikki huoneet
+    for (auto& h : rooms) {
+        h.isreserved = false;
+        h.reservationid = 0;
+    }
+
+    // sitten käydään varaukset läpi ja merkitään vastaava huone varatuksi
+    for (const auto& r : reservations) {
+        for (auto& h : rooms) {
+            if (h.roomnumber == r.roomnumber) {
+                h.isreserved = true;
+                h.reservationid = r.reservationid;
+                break;
+            }
+        }
+    }
+}
